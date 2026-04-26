@@ -102,7 +102,8 @@ POST   /api/v1/auth/register/client    # Registrar cliente
 GET    /api/v1/clients/{id}/vehicles   # Listar vehículos
 POST   /api/v1/emergencies             # Reportar emergencia
 GET    /api/v1/emergencies/{id}        # Obtener emergencia
-POST   /api/v1/emergencies/{id}/evidence # Adjuntar evidencia
+POST   /api/v1/emergencies/{id}/evidences # Adjuntar evidencia
+POST   /api/v1/emergencies/{id}/payments # Registrar pago del servicio
 ```
 
 ## 📦 Deployment en AWS

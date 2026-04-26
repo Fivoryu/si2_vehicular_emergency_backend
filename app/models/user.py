@@ -186,9 +186,13 @@ class PushDevice(Base):
     channel: Mapped[str] = mapped_column(String(20))
     platform: Mapped[str] = mapped_column(String(20))
     push_token: Mapped[str] = mapped_column(Text, unique=True)
+    sns_endpoint_arn: Mapped[str | None] = mapped_column(Text)
+    sns_application_arn: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_delivery_status: Mapped[str | None] = mapped_column(String(30))
+    last_error: Mapped[str | None] = mapped_column(Text)
 
     account: Mapped["Account"] = relationship(back_populates="push_devices")
     notification_deliveries: Mapped[list["NotificationDelivery"]] = relationship(back_populates="device", cascade="all, delete-orphan")

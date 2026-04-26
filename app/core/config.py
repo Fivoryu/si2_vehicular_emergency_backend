@@ -37,6 +37,11 @@ class Settings(BaseSettings):
         default="arn:aws:sns:us-east-1:000000000000:asistencia-vehicular-notifications",
         alias="AWS_SNS_TOPIC_ARN",
     )
+    aws_sns_platform_application_arn: str | None = Field(
+        default=None,
+        alias="AWS_SNS_PLATFORM_APPLICATION_ARN",
+    )
+    aws_push_enabled: bool = Field(default=True, alias="AWS_PUSH_ENABLED")
     aws_endpoint_url: str | None = Field(default=None, alias="AWS_ENDPOINT_URL")
 
     @property

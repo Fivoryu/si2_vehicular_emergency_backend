@@ -13,6 +13,7 @@ class EmergencyCreate(BaseModel):
     description_text: str | None = None
     manual_incident_type: str | None = None
     priority_name: str = Field(default="media")
+    offered_price: Decimal | None = Field(default=None, gt=0)
 
 
 class EvidenceCreate(BaseModel):
@@ -34,6 +35,87 @@ class EmergencyStatusUpdate(BaseModel):
     action_user: str | None = None
     notes: str | None = None
     worker_id: int | None = None
+
+
+class TechnicianOfferItem(BaseModel):
+    worker_id: int
+    worker_name: str
+    specialty: str | None
+    rating: Decimal
+    distance_km: Decimal | None
+    eta_minutes: int | None
+    suggested_price: Decimal
+    worker_offer: Decimal
+    status: str | None
+
+
+class TechnicianSelect(BaseModel):
+    worker_id: int
+    agreed_price: Decimal | None = Field(default=None, gt=0)
+
+
+class WorkerLocationUpdate(BaseModel):
+    latitude: Decimal
+    longitude: Decimal
+
+
+class TrackingResponse(BaseModel):
+    incident_id: int
+    status: str
+    eta_minutes: int | None = None
+    eta_at: datetime | None = None
+    incident_coordinates: dict
+    worker: dict | None = None
+    workshop: dict | None = None
+
+
+class ChatMessageCreate(BaseModel):
+    message_text: str = Field(min_length=1, max_length=1000)
+
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    incident_id: int
+    sender_account_id: int
+    sender_role: str
+    sender_name: str
+    message_text: str
+    sent_at: datetime
+
+
+class ServiceRatingCreate(BaseModel):
+    workshop_score: int = Field(ge=1, le=5)
+    worker_score: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=500)
+    punctuality: int | None = Field(default=None, ge=1, le=5)
+    work_quality: int | None = Field(default=None, ge=1, le=5)
+    customer_service: int | None = Field(default=None, ge=1, le=5)
+
+
+class ServiceRatingResponse(BaseModel):
+    incident_id: int
+    workshop_score: int
+    worker_score: int
+    comment: str | None = None
+    rated_at: datetime
+
+
+class PaymentCreate(BaseModel):
+    total_amount: Decimal = Field(gt=0)
+    payment_method: str = Field(min_length=2, max_length=30)
+    external_transaction_id: str | None = Field(default=None, max_length=100)
+
+
+class PaymentResponse(BaseModel):
+    id: int
+    incident_id: int
+    total_amount: Decimal
+    platform_fee: Decimal
+    workshop_amount: Decimal
+    status: str
+    payment_method: str | None
+    requested_at: datetime
+    confirmed_at: datetime | None
 
 
 class EvidenceResponse(BaseModel):

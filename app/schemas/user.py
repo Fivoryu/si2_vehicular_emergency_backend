@@ -77,6 +77,9 @@ class WorkerSummary(BaseModel):
     main_specialty: str | None
     operational_status: str | None
     is_available: bool
+    current_latitude: Decimal | None = None
+    current_longitude: Decimal | None = None
+    last_location_at: datetime | None = None
     average_rating: Decimal
 
 

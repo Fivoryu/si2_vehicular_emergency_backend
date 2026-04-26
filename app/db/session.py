@@ -32,6 +32,17 @@ class DatabaseSessionManager:
     async def create_all(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            await connection.execute(
+                text(
+                    """
+                    ALTER TABLE IF EXISTS push_devices
+                    ADD COLUMN IF NOT EXISTS sns_endpoint_arn TEXT,
+                    ADD COLUMN IF NOT EXISTS sns_application_arn TEXT,
+                    ADD COLUMN IF NOT EXISTS last_delivery_status VARCHAR(30),
+                    ADD COLUMN IF NOT EXISTS last_error TEXT
+                    """
+                )
+            )
 
     async def drop_all(self) -> None:
         async with self.engine.begin() as connection:

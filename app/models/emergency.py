@@ -101,6 +101,7 @@ class Incident(Base):
     payments: Mapped[list["Payment"]] = relationship(back_populates="incident", cascade="all, delete-orphan")
     workshop_rating: Mapped["WorkshopRating | None"] = relationship(back_populates="incident", uselist=False)
     worker_rating: Mapped["WorkerRating | None"] = relationship(back_populates="incident", uselist=False)
+    chat_messages: Mapped[list["IncidentChatMessage"]] = relationship(back_populates="incident", cascade="all, delete-orphan")
     notifications: Mapped[list["Notification"]] = relationship(back_populates="incident", cascade="all, delete-orphan")
     ai_inferences: Mapped[list["AIInference"]] = relationship(back_populates="incident", cascade="all, delete-orphan")
 
@@ -266,6 +267,21 @@ class WorkerRating(Base):
     incident: Mapped[Incident] = relationship(back_populates="worker_rating")
     worker: Mapped["Worker"] = relationship(back_populates="ratings")
     client: Mapped["User"] = relationship(back_populates="worker_ratings")
+
+
+class IncidentChatMessage(Base):
+    __tablename__ = "incident_chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id", ondelete="CASCADE"), index=True)
+    sender_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    sender_role: Mapped[str] = mapped_column(String(30))
+    sender_name: Mapped[str] = mapped_column(String(150))
+    message_text: Mapped[str] = mapped_column(Text)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    incident: Mapped[Incident] = relationship(back_populates="chat_messages")
+    sender: Mapped["Account"] = relationship()
 
 
 class Notification(Base):

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -7,12 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db_session, require_roles
-from app.models.emergency import DailyMetric, Incident, IncidentStatus, Payment
+from app.models.emergency import DailyMetric, Incident, IncidentStatus, Payment, Priority
 from app.models.user import (
     Account,
     AccountRoleName,
     Specialty,
     User,
+    Vehicle,
     Worker,
     Workshop,
     WorkshopAvailabilityHistory,
@@ -76,6 +77,9 @@ def worker_to_summary(worker: Worker) -> WorkerSummary:
         main_specialty=worker.main_specialty,
         operational_status=worker.operational_status.name if worker.operational_status else None,
         is_available=worker.is_available,
+        current_latitude=worker.current_latitude,
+        current_longitude=worker.current_longitude,
+        last_location_at=worker.last_location_at,
         average_rating=worker.average_rating,
     )
 
@@ -198,6 +202,12 @@ async def update_workshop_availability(
 async def list_workshop_requests(
     workshop_id: int,
     include_unassigned: bool = Query(default=True),
+    status_name: str | None = Query(default=None, max_length=50),
+    priority_name: str | None = Query(default=None, max_length=20),
+    location: str | None = Query(default=None, max_length=120),
+    search: str | None = Query(default=None, max_length=120),
+    reported_from: date | None = Query(default=None),
+    reported_to: date | None = Query(default=None),
     session: AsyncSession = Depends(get_db_session),
     current_user: Account = Depends(require_roles(AccountRoleName.WORKSHOP_OWNER, AccountRoleName.ADMIN, AccountRoleName.WORKER)),
 ) -> list[IncidentListItem]:
@@ -207,6 +217,36 @@ async def list_workshop_requests(
         statement = statement.where(or_(Incident.assigned_workshop_id == workshop_id, Incident.assigned_workshop_id.is_(None)))
     else:
         statement = statement.where(Incident.assigned_workshop_id == workshop_id)
+    if status_name:
+        statement = statement.where(Incident.status.has(IncidentStatus.name == status_name.strip().lower()))
+    if priority_name:
+        statement = statement.where(Incident.priority.has(Priority.name == priority_name.strip().lower()))
+    if reported_from:
+        statement = statement.where(Incident.reported_at >= datetime.combine(reported_from, datetime.min.time()))
+    if reported_to:
+        statement = statement.where(Incident.reported_at <= datetime.combine(reported_to, datetime.max.time()))
+    if location:
+        location_pattern = f"%{location.strip()}%"
+        statement = statement.where(
+            or_(
+                Incident.address_text.ilike(location_pattern),
+                Incident.assigned_branch.has(WorkshopBranch.address.ilike(location_pattern)),
+                Incident.assigned_branch.has(WorkshopBranch.name.ilike(location_pattern)),
+                Incident.assigned_workshop.has(Workshop.city.ilike(location_pattern)),
+            )
+        )
+    if search:
+        search_pattern = f"%{search.strip()}%"
+        statement = statement.where(
+            or_(
+                Incident.address_text.ilike(search_pattern),
+                Incident.client.has(User.first_name.ilike(search_pattern)),
+                Incident.client.has(User.last_name.ilike(search_pattern)),
+                Incident.vehicle.has(Vehicle.plate.ilike(search_pattern)),
+                Incident.vehicle.has(Vehicle.brand.ilike(search_pattern)),
+                Incident.vehicle.has(Vehicle.model.ilike(search_pattern)),
+            )
+        )
     incidents = (
         await session.scalars(
             statement.options(

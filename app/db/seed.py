@@ -22,6 +22,7 @@ from app.models import (
     DailyMetric,
     Evidence,
     Incident,
+    IncidentChatMessage,
     IncidentStatus,
     IncidentStatusHistory,
     IncidentType,
@@ -57,20 +58,48 @@ from app.models import (
 from app.models.user import AccountRoleName, ExperienceLevel, VehicleType
 
 
-DEFAULT_PASSWORD = "Seed12345"
+DEFAULT_PASSWORD = "password123"
 SEED_EMAIL_DOMAIN = "seed.com"
-CLIENT_COUNT = 20
-OWNER_COUNT = 20
-WORKSHOP_COUNT = 20
-BRANCHES_PER_WORKSHOP = 2
-WORKERS_PER_WORKSHOP = 3
-ADMIN_COUNT = 10
-VEHICLE_COUNT = 48
-INCIDENT_COUNT = 48
+DEMO_CLIENT_EMAIL = "cliente@test.com"
+DEMO_WORKSHOP_EMAIL = "taller@test.com"
+DEMO_WORKER_EMAIL = "tecnico@test.com"
+DEMO_ADMIN_EMAIL = "admin@test.com"
+CLIENT_COUNT = 60
+OWNER_COUNT = 28
+WORKSHOP_COUNT = 28
+BRANCHES_PER_WORKSHOP = 3
+WORKERS_PER_WORKSHOP = 5
+ADMIN_COUNT = 8
+VEHICLE_COUNT = 150
+INCIDENT_COUNT = 180
 
-FIRST_NAMES = ["Ana", "Luis", "Carla", "Mateo", "Sofia", "Diego", "Valeria", "Jorge", "Camila", "Andres", "Paola", "Marco"]
-LAST_NAMES = ["Rojas", "Mendoza", "Lopez", "Vargas", "Flores", "Quispe", "Aguilar", "Soria", "Suarez", "Torrez"]
-CITIES = ["La Paz", "Santa Cruz", "Cochabamba", "Sucre", "Tarija", "Oruro", "Potosi"]
+FIRST_NAMES = ["Ana", "Luis", "Carla", "Mateo", "Sofia", "Diego", "Valeria", "Jorge", "Camila", "Andres", "Paola", "Marco", "Daniela", "Rodrigo", "Gabriela", "Hugo"]
+LAST_NAMES = ["Rojas", "Mendoza", "Lopez", "Vargas", "Flores", "Quispe", "Aguilar", "Soria", "Suarez", "Torrez", "Rivera", "Mamani", "Arce", "Salazar"]
+CITIES = ["Santa Cruz de la Sierra"]
+ZONES = [
+    "Equipetrol",
+    "Sirari",
+    "Las Palmas",
+    "Urubo",
+    "Plan 3000",
+    "Villa Primero de Mayo",
+    "Los Lotes",
+    "El Trompillo",
+    "Hamacas",
+    "Centro",
+    "Mutualista",
+    "Doble Via La Guardia",
+]
+AVENUES = [
+    "Av. Cristo Redentor",
+    "Av. San Martin",
+    "Av. Beni",
+    "Av. Banzer",
+    "Av. Virgen de Cotoca",
+    "Av. Grigota",
+    "Av. Santos Dumont",
+    "Av. Roca y Coronado",
+]
 SPECIALTY_DATA = [
     ("bateria", "Diagnostico y cambio de baterias"),
     ("llanta", "Pinchazos, inflado y reemplazo"),
@@ -276,7 +305,7 @@ async def seed_clients(session: AsyncSession, roles: dict[str, Role]) -> list[Us
         first, last = name_pair(index)
         account = await create_account(
             session,
-            email=f"cliente{index + 1:02d}@{SEED_EMAIL_DOMAIN}",
+            email=DEMO_CLIENT_EMAIL if index == 0 else f"cliente{index + 1:02d}@{SEED_EMAIL_DOMAIN}",
             role=roles[AccountRoleName.CLIENT.value],
             phone_number=phone(index),
         )
@@ -299,7 +328,7 @@ async def seed_owners_and_workshops(
         city = CITIES[index % len(CITIES)]
         owner_account = await create_account(
             session,
-            email=f"taller{index + 1:02d}@{SEED_EMAIL_DOMAIN}",
+            email=DEMO_WORKSHOP_EMAIL if index == 0 else f"taller{index + 1:02d}@{SEED_EMAIL_DOMAIN}",
             role=roles[AccountRoleName.WORKSHOP_OWNER.value],
             phone_number=phone(index + 40),
         )
@@ -316,10 +345,10 @@ async def seed_owners_and_workshops(
             tax_id=f"NIT-{950000 + index}",
             email=owner_account.email,
             phone=owner_account.phone or phone(index + 140),
-            address=f"Av. Principal #{120 + index}, {city}",
+            address=f"{AVENUES[index % len(AVENUES)]}, {ZONES[index % len(ZONES)]}, 3er anillo #{120 + index}",
             city=city,
-            latitude=geo_offset("-16.50000000", index),
-            longitude=geo_offset("-68.15000000", index, "0.0011"),
+            latitude=geo_offset("-17.78332700", index),
+            longitude=geo_offset("-63.18214000", index, "0.0011"),
             coverage_radius_km=25 + (index % 3) * 5,
             opening_time=time(8, 0),
             closing_time=time(20, 0),
@@ -357,16 +386,32 @@ async def seed_owners_and_workshops(
         secondary_branch = WorkshopBranch(
             workshop_id=workshop.id,
             name="Sucursal 2",
-            address=f"{workshop.address} - sucursal",
-            latitude=(workshop.latitude or Decimal("-16.50000000")) + Decimal("0.0006"),
-            longitude=(workshop.longitude or Decimal("-68.15000000")) + Decimal("0.0006"),
+            address=f"{AVENUES[(index + 2) % len(AVENUES)]}, {ZONES[(index + 3) % len(ZONES)]}, 4to anillo #{220 + index}",
+            latitude=(workshop.latitude or Decimal("-17.78332700")) + Decimal("0.0006"),
+            longitude=(workshop.longitude or Decimal("-63.18214000")) + Decimal("0.0006"),
             coverage_radius_km=max(15, workshop.coverage_radius_km - 5),
             opening_time=workshop.opening_time,
             closing_time=workshop.closing_time,
             max_concurrent_capacity=max(2, workshop.max_concurrent_capacity - 1),
         )
-        branches.extend([main_branch, secondary_branch])
-        session.add_all([main_branch, secondary_branch])
+        seeded_branches = [main_branch, secondary_branch]
+        if BRANCHES_PER_WORKSHOP >= 3:
+            seeded_branches.append(
+                WorkshopBranch(
+                    workshop_id=workshop.id,
+                    name="Punto Express",
+                    address=f"{AVENUES[(index + 4) % len(AVENUES)]}, {ZONES[(index + 5) % len(ZONES)]}, radial #{320 + index}",
+                    latitude=(workshop.latitude or Decimal("-17.78332700")) + Decimal("0.0014"),
+                    longitude=(workshop.longitude or Decimal("-63.18214000")) - Decimal("0.0010"),
+                    coverage_radius_km=max(10, workshop.coverage_radius_km - 10),
+                    opening_time=time(7, 30),
+                    closing_time=time(22, 0),
+                    serves_24h=index % 5 == 0,
+                    max_concurrent_capacity=2 + (index % 2),
+                )
+            )
+        branches.extend(seeded_branches)
+        session.add_all(seeded_branches)
         session.add(
             WorkshopAvailabilityHistory(
                 workshop_id=workshop.id,
@@ -388,7 +433,7 @@ async def seed_admins(session: AsyncSession, roles: dict[str, Role]) -> list[Adm
         first, last = name_pair(index + 120)
         account = await create_account(
             session,
-            email=f"admin{index + 1:02d}@{SEED_EMAIL_DOMAIN}",
+            email=DEMO_ADMIN_EMAIL if index == 0 else f"admin{index + 1:02d}@{SEED_EMAIL_DOMAIN}",
             role=roles[AccountRoleName.ADMIN.value],
             phone_number=phone(index + 120),
         )
@@ -423,7 +468,7 @@ async def seed_workers(
             specialty = specialties[idx % len(specialties)]
             account = await create_account(
                 session,
-                email=f"tecnico{idx + 1:02d}@{SEED_EMAIL_DOMAIN}",
+                email=DEMO_WORKER_EMAIL if idx == 0 else f"tecnico{idx + 1:02d}@{SEED_EMAIL_DOMAIN}",
                 role=roles[AccountRoleName.WORKER.value],
                 phone_number=phone(idx + 200),
             )
@@ -439,8 +484,8 @@ async def seed_workers(
                 email=account.email,
                 main_specialty=specialty.name,
                 is_available=status_name == "libre",
-                current_latitude=geo_offset("-16.52000000", idx, "0.0007"),
-                current_longitude=geo_offset("-68.17000000", idx, "0.0007"),
+                current_latitude=geo_offset("-17.79000000", idx, "0.0007"),
+                current_longitude=geo_offset("-63.19000000", idx, "0.0007"),
                 last_location_at=datetime.utcnow() - timedelta(minutes=idx),
                 hired_on=date(2023, (idx % 12) + 1, (idx % 27) + 1),
                 average_rating=Decimal("4.00") + Decimal(idx % 6) / Decimal("10"),
@@ -514,6 +559,7 @@ async def seed_incidents(
     payments: list[Payment] = []
     workshop_ratings: list[WorkshopRating] = []
     worker_ratings: list[WorkerRating] = []
+    chat_messages: list[IncidentChatMessage] = []
     notification_recipients: list[NotificationRecipient] = []
     ai_inferences: list[AIInference] = []
     status_map = catalogs["incident_statuses"]
@@ -522,7 +568,7 @@ async def seed_incidents(
     payment_status = catalogs["payment_statuses"]["pagado"]
     payment_method_names = list(catalogs["payment_methods"].keys())
     incident_type_names = list(catalogs["incident_types"].keys())
-    status_cycle = ["pendiente", "asignado", "tecnico_asignado", "en_camino", "trabajando", "finalizado"]
+    status_cycle = ["pendiente", "asignado", "tecnico_asignado", "en_camino", "trabajando", "finalizado", "finalizado", "en_camino", "pendiente"]
     priority_cycle = ["alta", "media", "baja"]
     now = datetime.utcnow()
     branch_map: dict[int, list[WorkshopBranch]] = {}
@@ -542,6 +588,24 @@ async def seed_incidents(
         ai_type = incident_type_map[incident_type_names[(index + 1) % len(incident_type_names)]]
         final_type = manual_type if index % 4 != 0 else ai_type
         reported_at = now - timedelta(hours=index * 3)
+        distance_km = Decimal("3.20") + Decimal(index % 28) / Decimal("2")
+        priority_multiplier = {"alta": Decimal("1.35"), "media": Decimal("1.15"), "baja": Decimal("1.00")}[priority_cycle[index % len(priority_cycle)]]
+        base_cost = {
+            "bateria": Decimal("90.00"),
+            "llanta": Decimal("85.00"),
+            "motor": Decimal("150.00"),
+            "choque": Decimal("180.00"),
+            "electrico": Decimal("125.00"),
+            "cerradura": Decimal("75.00"),
+            "remolque": Decimal("220.00"),
+        }.get(manual_type.name, Decimal("110.00"))
+        estimated_total = (
+            base_cost
+            + distance_km * Decimal("4.50")
+            + priority_multiplier * Decimal("28.00")
+            + Decimal("45.00")
+        ).quantize(Decimal("0.01"))
+        final_total = (estimated_total * Decimal("1.10")).quantize(Decimal("0.01"))
         incidents.append(
             Incident(
                 client_id=client.id,
@@ -554,10 +618,10 @@ async def seed_incidents(
                 manual_incident_type_id=manual_type.id,
                 ai_incident_type_id=ai_type.id,
                 final_incident_type_id=final_type.id,
-                incident_latitude=geo_offset("-16.51000000", index),
-                incident_longitude=geo_offset("-68.14000000", index, "0.0010"),
-                address_text=f"Zona {index + 1}, {CITIES[index % len(CITIES)]}",
-                description_text=f"Incidente #{index + 1} reportado por falla de {manual_type.name}.",
+                incident_latitude=geo_offset("-17.78332700", index),
+                incident_longitude=geo_offset("-63.18214000", index, "0.0010"),
+                address_text=f"{AVENUES[index % len(AVENUES)]}, {ZONES[index % len(ZONES)]}, calle {120 + index}, Santa Cruz de la Sierra",
+                description_text=f"El vehiculo presenta una falla de {manual_type.name}; el cliente solicita asistencia en ruta.",
                 ai_confidence=Decimal("80.00") + Decimal(index % 15),
                 manually_prioritized=index % 7 == 0,
                 reported_at=reported_at,
@@ -565,12 +629,12 @@ async def seed_incidents(
                 accepted_at=reported_at + timedelta(minutes=22) if status_name != "pendiente" else None,
                 service_started_at=reported_at + timedelta(minutes=40) if status_name in {"trabajando", "finalizado"} else None,
                 service_finished_at=reported_at + timedelta(hours=2, minutes=15) if status_name == "finalizado" else None,
-                estimated_cost=Decimal("120.00") + Decimal(index * 4),
-                final_cost=Decimal("145.00") + Decimal(index * 5) if status_name == "finalizado" else None,
+                estimated_cost=estimated_total if status_name != "pendiente" else None,
+                final_cost=final_total if status_name == "finalizado" else None,
                 eta_minutes=20 + (index % 15) if status_name != "pendiente" else None,
                 eta_at=reported_at + timedelta(minutes=20 + (index % 15)) if status_name != "pendiente" else None,
                 eta_last_calculated_at=reported_at + timedelta(minutes=8) if status_name != "pendiente" else None,
-                workshop_distance_km=Decimal("6.50") + Decimal(index % 12) / Decimal("2") if status_name != "pendiente" else None,
+                workshop_distance_km=distance_km if status_name != "pendiente" else None,
             )
         )
     session.add_all(incidents)
@@ -642,6 +706,25 @@ async def seed_incidents(
         if owner:
             notification_recipients.append(NotificationRecipient(notification_id=notification.id, account_id=owner.account_id, is_read=index % 4 == 0))
 
+        if status_name != "pendiente":
+            eta_notification = Notification(
+                incident_id=incident.id,
+                notification_type="eta_actualizado",
+                title=f"ETA del incidente #{incident.id}",
+                message=f"El tecnico llegara en aproximadamente {incident.eta_minutes or 20} minutos.",
+                sent_at=incident.reported_at + timedelta(minutes=18),
+            )
+            session.add(eta_notification)
+            await session.flush()
+            notifications.append(eta_notification)
+            notification_recipients.append(
+                NotificationRecipient(
+                    notification_id=eta_notification.id,
+                    account_id=client.account_id,
+                    is_read=index % 2 == 0,
+                )
+            )
+
         if incident.assigned_worker_id:
             worker_assignments.append(
                 WorkerAssignmentHistory(
@@ -656,6 +739,37 @@ async def seed_incidents(
             )
             if worker.account_id:
                 notification_recipients.append(NotificationRecipient(notification_id=notification.id, account_id=worker.account_id, is_read=index % 5 == 0))
+                chat_messages.extend(
+                    [
+                        IncidentChatMessage(
+                            incident_id=incident.id,
+                            sender_account_id=client.account_id,
+                            sender_role=AccountRoleName.CLIENT.value,
+                            sender_name=f"{client.first_name} {client.last_name}",
+                            message_text=f"Hola, necesito apoyo con el incidente #{incident.id}.",
+                            sent_at=incident.reported_at + timedelta(minutes=16),
+                        ),
+                        IncidentChatMessage(
+                            incident_id=incident.id,
+                            sender_account_id=worker.account_id,
+                            sender_role=AccountRoleName.WORKER.value,
+                            sender_name=f"{worker.first_name} {worker.last_name}",
+                            message_text="Estoy en camino. Te mantendré informado por este chat.",
+                            sent_at=incident.reported_at + timedelta(minutes=19),
+                        ),
+                    ]
+                )
+                if status_name in {"trabajando", "finalizado"}:
+                    chat_messages.append(
+                        IncidentChatMessage(
+                            incident_id=incident.id,
+                            sender_account_id=worker.account_id,
+                            sender_role=AccountRoleName.WORKER.value,
+                            sender_name=f"{worker.first_name} {worker.last_name}",
+                            message_text="Ya llegué al punto y estoy revisando el vehículo.",
+                            sent_at=incident.reported_at + timedelta(minutes=43),
+                        )
+                    )
 
         ai_inferences.append(
             AIInference(
@@ -726,7 +840,18 @@ async def seed_incidents(
                 )
             )
 
-    session.add_all([*assignments, *worker_assignments, *histories, *evidences, *notification_recipients, *ai_inferences, *payments, *workshop_ratings, *worker_ratings])
+    session.add_all([
+        *assignments,
+        *worker_assignments,
+        *histories,
+        *evidences,
+        *chat_messages,
+        *notification_recipients,
+        *ai_inferences,
+        *payments,
+        *workshop_ratings,
+        *worker_ratings,
+    ])
     await session.flush()
     return notifications
 
@@ -795,9 +920,13 @@ async def seed_platform_activity(
                 channel="movil" if index % 2 == 0 else "web",
                 platform="android" if index % 2 == 0 else "web",
                 push_token=f"push-token-{account.id}",
+                sns_endpoint_arn=f"arn:aws:sns:us-east-1:000000000000:endpoint/GCM/asistencia-vehicular-android/{account.id}",
+                sns_application_arn="arn:aws:sns:us-east-1:000000000000:app/GCM/asistencia-vehicular-android",
                 is_active=index % 7 != 0,
                 registered_at=now - timedelta(days=index % 14),
                 last_used_at=now - timedelta(hours=index % 12),
+                last_delivery_status=["registered", "sent", "failed"][index % 3],
+                last_error="Credenciales FCM expiradas" if index % 11 == 0 else None,
             )
         )
 
@@ -894,10 +1023,10 @@ async def main() -> None:
     print(f"Incidentes: {result.incidents}")
     print(f"Pagos: {result.payments}")
     print(f"Notificaciones: {result.notifications}")
-    print(f"Cliente demo: cliente01@{SEED_EMAIL_DOMAIN} / {DEFAULT_PASSWORD}")
-    print(f"Propietario demo: taller01@{SEED_EMAIL_DOMAIN} / {DEFAULT_PASSWORD}")
-    print(f"Tecnico demo: tecnico01@{SEED_EMAIL_DOMAIN} / {DEFAULT_PASSWORD}")
-    print(f"Admin demo: admin01@{SEED_EMAIL_DOMAIN} / {DEFAULT_PASSWORD}")
+    print(f"Cliente demo: {DEMO_CLIENT_EMAIL} / {DEFAULT_PASSWORD}")
+    print(f"Propietario demo: {DEMO_WORKSHOP_EMAIL} / {DEFAULT_PASSWORD}")
+    print(f"Tecnico demo: {DEMO_WORKER_EMAIL} / {DEFAULT_PASSWORD}")
+    print(f"Admin demo: {DEMO_ADMIN_EMAIL} / {DEFAULT_PASSWORD}")
 
 
 if __name__ == "__main__":

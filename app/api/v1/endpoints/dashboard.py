@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db_session, require_roles
 from app.models.emergency import Incident, IncidentStatus, NotificationRecipient, Payment
-from app.models.user import Account, AccountRoleName, AuthSession, User, Worker, Workshop, WorkshopBranch
+from app.models.user import Account, AccountRoleName, AdminEvent, Administrator, AuthSession, User, Worker, Workshop, WorkshopBranch
 from app.schemas.user import (
     AdminDashboardMetrics,
     BranchSummary,
@@ -74,7 +74,7 @@ async def get_my_dashboard(
             role=role,
             profile_id=client.id,
             profile_type="client",
-            display_name=current_account.display_name,
+            display_name=f"{client.first_name} {client.last_name}",
             permissions=current_account.permission_codes,
             client_dashboard=ClientDashboardSummary(
                 client_id=client.id,
@@ -140,7 +140,7 @@ async def get_my_dashboard(
             profile_type="worker",
             workshop_id=worker.workshop_id,
             branch_id=worker.branch_id,
-            display_name=current_account.display_name,
+            display_name=f"{worker.first_name} {worker.last_name}",
             permissions=current_account.permission_codes,
             worker_dashboard=WorkerDashboardResponse(
                 worker_id=worker.id,
@@ -169,6 +169,7 @@ async def get_my_dashboard(
         )
 
     if role == AccountRoleName.ADMIN.value:
+        admin = await session.scalar(select(Administrator).where(Administrator.account_id == current_account.id))
         total_accounts = await session.scalar(select(func.count(Account.id)))
         total_clients = await session.scalar(select(func.count(User.id)))
         total_workshops = await session.scalar(select(func.count(Workshop.id)))
@@ -208,11 +209,18 @@ async def get_my_dashboard(
                 .order_by(Workshop.trade_name)
             )
         ).all()
+        admin_events = (
+            await session.scalars(
+                select(AdminEvent)
+                .order_by(AdminEvent.event_at.desc(), AdminEvent.id.desc())
+                .limit(10)
+            )
+        ).all()
         return DashboardBootstrapResponse(
             role=role,
-            profile_id=current_account.admin_profile.id if current_account.admin_profile else None,
+            profile_id=admin.id if admin else None,
             profile_type="admin",
-            display_name=current_account.display_name,
+            display_name=f"{admin.first_name} {admin.last_name}" if admin else current_account.email,
             permissions=current_account.permission_codes,
             admin_dashboard=AdminDashboardMetrics(
                 total_accounts=total_accounts or 0,
@@ -249,13 +257,24 @@ async def get_my_dashboard(
                     }
                     for incident in recent_incidents
                 ],
+                admin_events=[
+                    {
+                        "id": event.id,
+                        "entity": event.entity,
+                        "entity_id": event.entity_id,
+                        "action": event.action,
+                        "notes": event.notes,
+                        "event_at": event.event_at,
+                    }
+                    for event in admin_events
+                ],
             ),
         )
 
     return DashboardBootstrapResponse(
         role=role or "",
-        profile_id=current_account.owner_profile.id if current_account.owner_profile else None,
+        profile_id=None,
         profile_type="workshop_owner",
-        display_name=current_account.display_name,
+        display_name=current_account.email,
         permissions=current_account.permission_codes,
     )
