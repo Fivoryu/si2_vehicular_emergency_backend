@@ -655,7 +655,15 @@ async def seed_incidents(
                 incident_id=incident.id,
                 candidate_workshop_id=workshop.id,
                 assignment_score=Decimal("82.00") + Decimal(index % 14),
-                used_criteria={"distance": 35, "capacity": 20, "rating": 25, "availability": 20},
+                used_criteria={
+                    "distance_score": 35,
+                    "capacity_score": 20,
+                    "rating_score": 25,
+                    "availability_score": 20,
+                    "specialty_score": 15,
+                    "required_specialty": incident.final_classification or "motor",
+                    "model": "local-incident-ai",
+                },
                 was_selected=incident.assigned_workshop_id == workshop.id,
                 was_rejected=False,
                 assigned_at=incident.reported_at + timedelta(minutes=10),
@@ -775,10 +783,14 @@ async def seed_incidents(
             AIInference(
                 incident_id=incident.id,
                 process_type="resumen",
-                model_provider="seed-ai",
-                model_version="v1",
+                model_provider="local-incident-ai",
+                model_version="v1.0-deterministic",
                 input_summary=incident.description_text,
-                output_summary=f"Resumen sintetico del incidente {incident.id} para {incident.final_incident_type.name if incident.final_incident_type else 'otro'}.",
+                output_summary=(
+                    f"CU19: resumen sintetico del incidente {incident.id}; clasificacion "
+                    f"{incident.final_incident_type.name if incident.final_incident_type else 'otro'} "
+                    "a partir de texto, audio e imagenes demo."
+                ),
                 confidence=incident.ai_confidence,
                 duration_ms=120 + index,
                 is_final_result=index % 2 == 0,
@@ -788,13 +800,26 @@ async def seed_incidents(
             AIInference(
                 incident_id=incident.id,
                 process_type="priorizacion",
-                model_provider="seed-ai",
-                model_version="v1",
+                model_provider="local-incident-ai",
+                model_version="v1.0-deterministic",
                 input_summary=f"Prioridad base: {incident.priority.name}",
-                output_summary=f"Prioridad sugerida {incident.priority.name} para incidente {incident.id}.",
+                output_summary=f"CU20: prioridad sugerida {incident.priority.name} para incidente {incident.id} por tipo, riesgo y zona.",
                 confidence=Decimal("87.00"),
                 duration_ms=90 + index,
                 is_final_result=index % 3 == 0,
+            )
+        )
+        ai_inferences.append(
+            AIInference(
+                incident_id=incident.id,
+                process_type="asignacion",
+                model_provider="local-incident-ai",
+                model_version="v1.0-deterministic",
+                input_summary=f"Especialidad {incident.final_classification or 'motor'}, distancia {incident.workshop_distance_km or distance_km} km.",
+                output_summary=f"CU21: taller {workshop.trade_name} rankeado por distancia, capacidad, rating, disponibilidad y especialidad.",
+                confidence=Decimal("90.00"),
+                duration_ms=110 + index,
+                is_final_result=incident.assigned_workshop_id == workshop.id,
             )
         )
 

@@ -59,6 +59,32 @@ class WorkerLocationUpdate(BaseModel):
     longitude: Decimal
 
 
+class AIAssignmentCandidate(BaseModel):
+    workshop_id: int
+    workshop_name: str
+    branch_id: int | None = None
+    branch_name: str | None = None
+    worker_id: int | None = None
+    worker_name: str | None = None
+    score: Decimal
+    distance_km: Decimal | None = None
+    eta_minutes: int | None = None
+    criteria: dict
+    reason: str
+
+
+class AIProcessResponse(BaseModel):
+    incident_id: int
+    incident_type: str
+    required_specialty: str
+    priority: str
+    confidence: Decimal
+    summary: str
+    risk_signals: list[str] = Field(default_factory=list)
+    matched_keywords: dict[str, list[str]] = Field(default_factory=dict)
+    assignment_candidates: list[AIAssignmentCandidate] = Field(default_factory=list)
+
+
 class TrackingResponse(BaseModel):
     incident_id: int
     status: str

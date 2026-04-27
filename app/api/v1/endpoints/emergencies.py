@@ -28,6 +28,7 @@ from app.models.emergency import (
 )
 from app.models.user import Account, AccountRoleName, User, Vehicle, Worker, WorkerStatus, WorkerStatusHistory, Workshop, WorkshopBranch, WorkshopOwnerLink
 from app.schemas.emergency import (
+    AIProcessResponse,
     ChatMessageCreate,
     ChatMessageResponse,
     EmergencyCreate,
@@ -46,7 +47,11 @@ from app.schemas.emergency import (
     EvidenceCreate,
     EvidenceResponse,
 )
+from app.services.incident_ai import MODEL_PROVIDER as LOCAL_AI_PROVIDER
+from app.services.incident_ai import MODEL_VERSION as LOCAL_AI_VERSION
+from app.services.incident_ai import analyze_incident, rank_assignment_candidates
 from app.services.notification_dispatcher import create_notification
+from app.services.trained_vision_ai import analyze_image_evidence
 
 router = APIRouter()
 
@@ -209,6 +214,109 @@ async def get_incident_type_by_name(session: AsyncSession, name: str | None) -> 
     return fallback
 
 
+async def apply_local_ai_processing(
+    *,
+    session: AsyncSession,
+    incident: Incident,
+    requested_priority_name: str | None = None,
+) -> tuple[Incident, object]:
+    analysis = analyze_incident(
+        description_text=incident.description_text,
+        address_text=incident.address_text,
+        manual_incident_type=incident.manual_incident_type_name,
+        evidences=incident.evidences,
+        requested_priority=requested_priority_name or (incident.priority.name if incident.priority else None),
+    )
+    ai_type = await get_incident_type_by_name(session, analysis.incident_type)
+    priority = await get_priority_by_name(session, analysis.suggested_priority)
+    incident.ai_incident_type_id = ai_type.id if ai_type else None
+    incident.final_incident_type_id = ai_type.id if ai_type else incident.manual_incident_type_id
+    incident.priority_id = priority.id
+    incident.ai_confidence = analysis.confidence
+    incident.updated_at = datetime.utcnow()
+    session.add(
+        AIInference(
+            incident_id=incident.id,
+            process_type="clasificacion",
+            model_provider=LOCAL_AI_PROVIDER,
+            model_version=LOCAL_AI_VERSION,
+            input_summary=(
+                f"Texto='{incident.description_text or ''}'. Direccion='{incident.address_text or ''}'. "
+                f"Tipo manual='{incident.manual_incident_type_name or 'sin tipo'}'."
+            ),
+            output_summary=(
+                f"CU19: tipo '{analysis.incident_type}' con confianza {analysis.confidence}%. "
+                f"{analysis.summary}"
+            ),
+            confidence=analysis.confidence,
+            duration_ms=120,
+            is_final_result=True,
+        )
+    )
+    session.add(
+        AIInference(
+            incident_id=incident.id,
+            process_type="priorizacion",
+            model_provider=LOCAL_AI_PROVIDER,
+            model_version=LOCAL_AI_VERSION,
+            input_summary=str(analysis.criteria),
+            output_summary=(
+                f"CU20: prioridad sugerida '{analysis.suggested_priority}' por señales "
+                f"{', '.join(analysis.risk_signals) if analysis.risk_signals else 'operativas normales'}."
+            ),
+            confidence=analysis.confidence,
+            duration_ms=85,
+            is_final_result=True,
+        )
+    )
+    return incident, analysis
+
+
+async def build_ai_assignment_candidates(
+    *,
+    session: AsyncSession,
+    incident: Incident,
+    required_specialty: str,
+    limit: int = 5,
+):
+    workshops = (
+        await session.scalars(
+            select(Workshop)
+            .options(
+                selectinload(Workshop.branches),
+                selectinload(Workshop.workers).selectinload(Worker.operational_status),
+            )
+            .where(Workshop.is_active.is_(True), Workshop.is_available.is_(True))
+        )
+    ).unique().all()
+    return rank_assignment_candidates(
+        incident_latitude=incident.incident_latitude,
+        incident_longitude=incident.incident_longitude,
+        required_specialty=required_specialty,
+        workshops=workshops,
+        limit=limit,
+    )
+
+
+def add_assignment_rankings(
+    *,
+    session: AsyncSession,
+    incident: Incident,
+    candidates,
+    selected_workshop_id: int | None = None,
+) -> None:
+    for candidate in candidates:
+        session.add(
+            Assignment(
+                incident_id=incident.id,
+                candidate_workshop_id=candidate.workshop_id,
+                assignment_score=candidate.score,
+                used_criteria=candidate.criteria,
+                was_selected=selected_workshop_id == candidate.workshop_id,
+            )
+        )
+
+
 def serialize_chat_message(message: IncidentChatMessage) -> ChatMessageResponse:
     return ChatMessageResponse(
         id=message.id,
@@ -274,11 +382,6 @@ async def report_emergency(
     priority = await get_priority_by_name(session, payload.priority_name)
 
     manual_incident_type = await get_incident_type_by_name(session, payload.manual_incident_type)
-    suggested_price = calculate_client_suggested_price(
-        incident_type_name=payload.manual_incident_type,
-        priority_name=priority.name,
-        offered_price=payload.offered_price,
-    )
     incident = Incident(
         client_id=payload.client_id,
         vehicle_id=payload.vehicle_id,
@@ -290,15 +393,77 @@ async def report_emergency(
         incident_longitude=payload.incident_longitude,
         address_text=payload.address_text,
         description_text=payload.description_text,
-        estimated_cost=payload.offered_price or suggested_price,
     )
+    incident.manual_incident_type = manual_incident_type
+    incident.priority = priority
     session.add(incident)
     await session.flush()
+    incident, ai_analysis = await apply_local_ai_processing(
+        session=session,
+        incident=incident,
+        requested_priority_name=payload.priority_name,
+    )
+    suggested_price = calculate_client_suggested_price(
+        incident_type_name=ai_analysis.incident_type,
+        priority_name=ai_analysis.suggested_priority,
+        offered_price=payload.offered_price,
+    )
+    incident.estimated_cost = payload.offered_price or suggested_price
+    candidates = await build_ai_assignment_candidates(
+        session=session,
+        incident=incident,
+        required_specialty=ai_analysis.required_specialty,
+    )
+    selected_candidate = candidates[0] if candidates else None
+    if selected_candidate:
+        assigned_status = await get_status_by_name(session, "asignado")
+        incident.status_id = assigned_status.id
+        incident.assigned_workshop_id = selected_candidate.workshop_id
+        incident.assigned_branch_id = selected_candidate.branch_id
+        incident.assigned_at = datetime.utcnow()
+        incident.workshop_distance_km = selected_candidate.distance_km
+        incident.eta_minutes = selected_candidate.eta_minutes
+        incident.eta_at = datetime.utcnow() + timedelta(minutes=selected_candidate.eta_minutes or 20)
+        incident.eta_last_calculated_at = datetime.utcnow()
+        session.add(
+            IncidentStatusHistory(
+                incident_id=incident.id,
+                old_status_id=pending_status.id,
+                new_status_id=assigned_status.id,
+                notes="CU21 asignacion inteligente automatica",
+            )
+        )
+    add_assignment_rankings(
+        session=session,
+        incident=incident,
+        candidates=candidates,
+        selected_workshop_id=selected_candidate.workshop_id if selected_candidate else None,
+    )
+    session.add(
+        AIInference(
+            incident_id=incident.id,
+            process_type="asignacion",
+            model_provider=LOCAL_AI_PROVIDER,
+            model_version=LOCAL_AI_VERSION,
+            input_summary=f"Especialidad requerida: {ai_analysis.required_specialty}. Candidatos evaluados: {len(candidates)}.",
+            output_summary=(
+                f"CU21: {'seleccionado ' + selected_candidate.workshop_name if selected_candidate else 'sin taller candidato disponible'} "
+                f"con score {selected_candidate.score if selected_candidate else 'N/A'}."
+            ),
+            confidence=selected_candidate.score if selected_candidate else Decimal("45.00"),
+            duration_ms=160,
+            is_final_result=selected_candidate is not None,
+        )
+    )
     await create_notification(
         session=session,
         account_ids=[client.account_id],
         title="Emergencia reportada",
-        message="Tu solicitud fue registrada correctamente y está pendiente de asignación.",
+        message=(
+            f"Tu solicitud fue registrada y asignada a {selected_candidate.workshop_name}."
+            if selected_candidate
+            else "Tu solicitud fue registrada correctamente y está pendiente de asignación."
+        ),
         notification_type="emergencia_reportada",
         incident_id=incident.id,
     )
@@ -336,15 +501,36 @@ async def add_evidence(
     )
     if not incident:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incidente no encontrado.")
+    vision_result = analyze_image_evidence(payload.resource_url, payload.evidence_type)
     evidence = Evidence(
         incident_id=incident_id,
         evidence_type=payload.evidence_type,
         resource_url=payload.resource_url,
         audio_transcription=payload.audio_transcription,
-        ai_analysis=payload.ai_analysis,
+        ai_analysis=payload.ai_analysis or (vision_result.as_evidence_analysis() if vision_result else None),
         visual_order=payload.visual_order,
     )
     session.add(evidence)
+    await session.flush()
+    if vision_result:
+        session.add(
+            AIInference(
+                incident_id=incident.id,
+                process_type="vision_imagen",
+                model_provider=vision_result.provider,
+                model_version=vision_result.model_version,
+                input_summary=f"Evidencia {evidence.evidence_type}: {evidence.resource_url}",
+                output_summary=vision_result.as_evidence_analysis(),
+                confidence=vision_result.confidence,
+                duration_ms=140,
+                is_final_result=vision_result.used_trained_model,
+            )
+        )
+        await apply_local_ai_processing(
+            session=session,
+            incident=incident,
+            requested_priority_name=incident.priority.name if incident.priority else None,
+        )
     await session.commit()
     await session.refresh(evidence)
     return EvidenceResponse.model_validate(evidence)
@@ -434,6 +620,7 @@ async def list_technician_offers(
             selectinload(Incident.priority),
             selectinload(Incident.manual_incident_type),
             selectinload(Incident.final_incident_type),
+            selectinload(Incident.evidences),
         )
         .where(Incident.id == incident_id)
     )
@@ -442,17 +629,38 @@ async def list_technician_offers(
     if current_user.primary_role == AccountRoleName.CLIENT.value and incident.client.account_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No puedes ver ofertas de este incidente.")
 
-    workers = (
-        await session.scalars(
+    analysis = analyze_incident(
+        description_text=incident.description_text,
+        address_text=incident.address_text,
+        manual_incident_type=incident.final_classification or incident.manual_incident_type_name,
+        evidences=incident.evidences,
+        requested_priority=incident.priority.name,
+    )
+    candidates = await build_ai_assignment_candidates(
+        session=session,
+        incident=incident,
+        required_specialty=analysis.required_specialty,
+        limit=8,
+    )
+    candidate_worker_ids = [candidate.worker_id for candidate in candidates if candidate.worker_id]
+    workers_query = (
+        select(Worker)
+        .options(selectinload(Worker.operational_status), selectinload(Worker.branch), selectinload(Worker.workshop))
+        .where(Worker.is_active.is_(True), Worker.is_available.is_(True))
+        .order_by(Worker.average_rating.desc(), Worker.id.asc())
+        .limit(8)
+    )
+    if candidate_worker_ids:
+        workers_query = (
             select(Worker)
             .options(selectinload(Worker.operational_status), selectinload(Worker.branch), selectinload(Worker.workshop))
-            .where(Worker.is_active.is_(True), Worker.is_available.is_(True))
-            .order_by(Worker.average_rating.desc(), Worker.id.asc())
-            .limit(8)
+            .where(Worker.id.in_(candidate_worker_ids))
         )
-    ).all()
+    workers = (await session.scalars(workers_query)).all()
+    worker_by_id = {worker.id: worker for worker in workers}
+    ordered_workers = [worker_by_id[worker_id] for worker_id in candidate_worker_ids if worker_id in worker_by_id] or workers
     offers: list[TechnicianOfferItem] = []
-    for worker in workers:
+    for worker in ordered_workers:
         distance_km = calculate_distance_km(
             worker.current_latitude or (worker.branch.latitude if worker.branch else None),
             worker.current_longitude or (worker.branch.longitude if worker.branch else None),
@@ -527,6 +735,43 @@ async def select_technician_offer(
         incident.eta_minutes = max(8, int(distance_km * Decimal("3.0")) + 6)
         incident.eta_at = datetime.utcnow() + timedelta(minutes=incident.eta_minutes)
         incident.eta_last_calculated_at = datetime.utcnow()
+    cost_breakdown = calculate_service_cost(incident=incident, distance_km=distance_km or Decimal("5.00"), status_name="tecnico_asignado")
+    candidates = await build_ai_assignment_candidates(
+        session=session,
+        incident=incident,
+        required_specialty=incident.final_classification or worker.main_specialty or "motor",
+        limit=5,
+    )
+    matching_candidate = next((candidate for candidate in candidates if candidate.workshop_id == worker.workshop_id), None)
+    session.add(
+        Assignment(
+            incident_id=incident.id,
+            candidate_workshop_id=worker.workshop_id,
+            assignment_score=matching_candidate.score if matching_candidate else Decimal("90.00"),
+            used_criteria=matching_candidate.criteria if matching_candidate else {
+                "selected_by_client": True,
+                "distance_km": float(distance_km or Decimal("0")),
+                "worker_specialty": worker.main_specialty,
+            },
+            was_selected=True,
+        )
+    )
+    session.add(
+        AIInference(
+            incident_id=incident.id,
+            process_type="asignacion",
+            model_provider=LOCAL_AI_PROVIDER,
+            model_version=LOCAL_AI_VERSION,
+            input_summary=f"Cliente selecciono tecnico {worker.id}; distancia {distance_km} km.",
+            output_summary=(
+                f"CU21: tecnico {worker.first_name} {worker.last_name} asignado. "
+                f"ETA {incident.eta_minutes or 'N/D'} min. Costo estimado Bs. {payload.agreed_price or cost_breakdown['total']}."
+            ),
+            confidence=matching_candidate.score if matching_candidate else Decimal("90.00"),
+            duration_ms=110,
+            is_final_result=True,
+        )
+    )
 
     await set_worker_operational_status(
         session=session,
@@ -565,6 +810,79 @@ async def select_technician_offer(
     )
     await session.commit()
     return await get_incident_detail(incident.id, session)
+
+
+@router.post("/{incident_id}/ai/process", response_model=AIProcessResponse)
+async def process_incident_with_ai(
+    incident_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    _current_user: Account = Depends(require_roles(AccountRoleName.WORKSHOP_OWNER, AccountRoleName.ADMIN)),
+) -> AIProcessResponse:
+    incident = await session.scalar(
+        select(Incident)
+        .options(
+            selectinload(Incident.priority),
+            selectinload(Incident.manual_incident_type),
+            selectinload(Incident.final_incident_type),
+            selectinload(Incident.evidences),
+        )
+        .where(Incident.id == incident_id)
+    )
+    if not incident:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incidente no encontrado.")
+
+    incident, analysis = await apply_local_ai_processing(session=session, incident=incident)
+    candidates = await build_ai_assignment_candidates(
+        session=session,
+        incident=incident,
+        required_specialty=analysis.required_specialty,
+    )
+    add_assignment_rankings(
+        session=session,
+        incident=incident,
+        candidates=candidates,
+        selected_workshop_id=incident.assigned_workshop_id,
+    )
+    session.add(
+        AIInference(
+            incident_id=incident.id,
+            process_type="asignacion",
+            model_provider=LOCAL_AI_PROVIDER,
+            model_version=LOCAL_AI_VERSION,
+            input_summary=f"Reproceso manual IA. Especialidad requerida {analysis.required_specialty}.",
+            output_summary=f"CU21: {len(candidates)} candidatos rankeados para el incidente.",
+            confidence=candidates[0].score if candidates else Decimal("45.00"),
+            duration_ms=150,
+            is_final_result=bool(candidates),
+        )
+    )
+    await session.commit()
+    return AIProcessResponse(
+        incident_id=incident.id,
+        incident_type=analysis.incident_type,
+        required_specialty=analysis.required_specialty,
+        priority=analysis.suggested_priority,
+        confidence=analysis.confidence,
+        summary=analysis.summary,
+        risk_signals=analysis.risk_signals,
+        matched_keywords=analysis.matched_keywords,
+        assignment_candidates=[
+            {
+                "workshop_id": candidate.workshop_id,
+                "workshop_name": candidate.workshop_name,
+                "branch_id": candidate.branch_id,
+                "branch_name": candidate.branch_name,
+                "worker_id": candidate.worker_id,
+                "worker_name": candidate.worker_name,
+                "score": candidate.score,
+                "distance_km": candidate.distance_km,
+                "eta_minutes": candidate.eta_minutes,
+                "criteria": candidate.criteria,
+                "reason": candidate.reason,
+            }
+            for candidate in candidates
+        ],
+    )
 
 
 @router.get("/{incident_id}", response_model=IncidentDetailResponse)
@@ -695,6 +1013,7 @@ async def get_incident_detail(
                 "selected": item.was_selected,
                 "rejected": item.was_rejected,
                 "rejection_reason": item.rejection_reason,
+                "criteria": item.used_criteria,
             }
             for item in incident.assignments
         ],
@@ -1124,6 +1443,7 @@ async def decide_emergency(
             selectinload(Incident.priority),
             selectinload(Incident.manual_incident_type),
             selectinload(Incident.final_incident_type),
+            selectinload(Incident.evidences),
             selectinload(Incident.assigned_worker).selectinload(Worker.operational_status),
             selectinload(Incident.assigned_branch),
         )
@@ -1139,11 +1459,25 @@ async def decide_emergency(
     new_status = await get_status_by_name(session, status_name)
     old_status_id = incident.status_id
     primary_branch = await session.scalar(select(WorkshopBranch).where(WorkshopBranch.workshop_id == workshop.id).order_by(WorkshopBranch.id))
+    ai_analysis = analyze_incident(
+        description_text=incident.description_text,
+        address_text=incident.address_text,
+        manual_incident_type=incident.final_classification or incident.manual_incident_type_name,
+        evidences=incident.evidences,
+        requested_priority=incident.priority.name,
+    )
+    candidates = await build_ai_assignment_candidates(
+        session=session,
+        incident=incident,
+        required_specialty=ai_analysis.required_specialty,
+        limit=5,
+    )
+    matching_candidate = next((candidate for candidate in candidates if candidate.workshop_id == workshop.id), None)
     assignment = Assignment(
         incident_id=incident.id,
         candidate_workshop_id=workshop.id,
-        assignment_score=Decimal("92.50") if payload.accepted else Decimal("45.00"),
-        used_criteria={"distance": 35, "capacity": 25, "rating": 20, "availability": 20},
+        assignment_score=matching_candidate.score if matching_candidate else (Decimal("92.50") if payload.accepted else Decimal("45.00")),
+        used_criteria=matching_candidate.criteria if matching_candidate else {"distance": 35, "capacity": 25, "rating": 20, "availability": 20},
         was_selected=payload.accepted,
         was_rejected=not payload.accepted,
         rejected_at=datetime.utcnow() if not payload.accepted else None,

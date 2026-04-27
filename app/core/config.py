@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     aws_push_enabled: bool = Field(default=True, alias="AWS_PUSH_ENABLED")
     aws_endpoint_url: str | None = Field(default=None, alias="AWS_ENDPOINT_URL")
 
+    ai_vision_enabled: bool = Field(default=True, alias="AI_VISION_ENABLED")
+    ai_vision_provider: str = Field(default="local_heuristic", alias="AI_VISION_PROVIDER")
+    ai_vision_model_path: str | None = Field(default=None, alias="AI_VISION_MODEL_PATH")
+    ai_vision_labels_path: str | None = Field(default=None, alias="AI_VISION_LABELS_PATH")
+    ai_vision_input_size: int = Field(default=224, alias="AI_VISION_INPUT_SIZE")
+    ai_vision_confidence_threshold: float = Field(default=0.55, alias="AI_VISION_CONFIDENCE_THRESHOLD")
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.app_cors_origins.split(",") if origin.strip()]

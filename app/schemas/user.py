@@ -83,6 +83,17 @@ class WorkerSummary(BaseModel):
     average_rating: Decimal
 
 
+class WorkerCreateRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    national_id: str = Field(min_length=4, max_length=20)
+    email: EmailStr
+    phone: str | None = Field(default=None, min_length=6, max_length=20)
+    password: str = Field(min_length=6, max_length=128)
+    branch_id: int | None = None
+    main_specialty: str | None = Field(default=None, max_length=50)
+
+
 class WorkshopProfileResponse(BaseModel):
     id: int
     trade_name: str

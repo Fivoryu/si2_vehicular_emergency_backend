@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db_session, require_roles
+from app.core.security import hash_password
 from app.models.emergency import DailyMetric, Incident, IncidentStatus, Payment, Priority
 from app.models.user import (
     Account,
+    AccountRole,
     AccountRoleName,
     Specialty,
     User,
@@ -22,6 +24,7 @@ from app.models.user import (
     WorkshopOwner,
     WorkshopOwnerLink,
 )
+from app.api.v1.endpoints.auth import ensure_email_not_taken, ensure_permission_catalog, ensure_role_catalog
 from app.schemas.emergency import IncidentListItem
 from app.schemas.user import (
     BranchSummary,
@@ -30,6 +33,7 @@ from app.schemas.user import (
     WorkshopCatalogSummary,
     WorkshopDashboardMetrics,
     WorkshopProfileResponse,
+    WorkerCreateRequest,
     WorkerSummary,
     WorkshopOwnerSummary,
 )
@@ -349,6 +353,61 @@ async def get_workshop_catalog(
         branches=[branch_to_summary(branch) for branch in workshop.branches],
         cities=list(cities),
     )
+
+
+@router.post("/{workshop_id}/workers", response_model=WorkerSummary, status_code=status.HTTP_201_CREATED)
+async def create_workshop_worker(
+    workshop_id: int,
+    payload: WorkerCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: Account = Depends(require_roles(AccountRoleName.WORKSHOP_OWNER, AccountRoleName.ADMIN)),
+) -> WorkerSummary:
+    workshop = await assert_workshop_scope(current_user, workshop_id, session)
+
+    await ensure_email_not_taken(session, payload.email)
+    role_map = await ensure_role_catalog(session)
+    await ensure_permission_catalog(session, role_map)
+
+    existing_national_id = await session.scalar(select(Worker).where(Worker.national_id == payload.national_id))
+    if existing_national_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El documento ya está registrado.")
+
+    branch_id = payload.branch_id
+    if branch_id is not None:
+        branch = await session.scalar(
+            select(WorkshopBranch).where(WorkshopBranch.id == branch_id, WorkshopBranch.workshop_id == workshop.id)
+        )
+        if not branch:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="La sucursal no pertenece al taller.")
+
+    account = Account(
+        email=str(payload.email),
+        phone=payload.phone,
+        password_hash=hash_password(payload.password),
+        is_verified=True,
+    )
+    session.add(account)
+    await session.flush()
+    session.add(AccountRole(account_id=account.id, role_id=role_map[AccountRoleName.WORKER.value].id))
+
+    worker = Worker(
+        workshop_id=workshop.id,
+        branch_id=branch_id,
+        account_id=account.id,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        national_id=payload.national_id,
+        phone=payload.phone,
+        email=str(payload.email),
+        main_specialty=payload.main_specialty,
+        is_available=True,
+        is_active=True,
+        created_by=current_user.email,
+    )
+    session.add(worker)
+    await session.commit()
+    await session.refresh(worker)
+    return worker_to_summary(worker)
 
 
 @router.get("/metrics/daily", response_model=list[DailyMetricResponse])
